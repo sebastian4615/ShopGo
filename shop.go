@@ -1,38 +1,57 @@
 package main
 
 import (
+	"controller/shopController"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"model"
+	"model/orderModel"
+	"model/userModel"
 	"net/http"
-	"storage"
-	"time"
+	"storage/shopDb"
 
-	"github.com/dgrijalva/jwt-go"
 	"github.com/gorilla/mux"
 )
 
+type ShopHamdler struct {
+	handler http.Handler
+}
+
+func (l *ShopHamdler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/login" && r.URL.Path != "/register" {
+		err := shopController.CheckAuthorization(w, r)
+		if err != nil {
+			json.NewEncoder(w).Encode(err.Error())
+			return
+		}
+	}
+	l.handler.ServeHTTP(w, r)
+	// log.Printf("%s %s %v", r.Method, r.URL.Path, time.Since(start))
+}
+
+func NewShopHandler(handlerToWrap http.Handler) *ShopHamdler {
+	return &ShopHamdler{handlerToWrap}
+}
+
 func homePage(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Shop HomePage!")
+	fmt.Fprintf(w, "Welcome to the HomePage!")
 	fmt.Println("Endpoint Hit: homePage")
 }
 
 func handleRequests() {
-	// creates a new instance of a mux router
 	myRouter := mux.NewRouter().StrictSlash(true)
 	myRouter.HandleFunc("/", homePage)
-	myRouter.Handle("/user_orders/{id}", isAuthorized(userOrders))
-	myRouter.Handle("/user_order", isAuthorized(addOrder)).Methods("POST")
-	myRouter.Handle("/user_order/{id}", isAuthorized(deleteOrder)).Methods("DELETE")
-	myRouter.Handle("/user_order/{id}", isAuthorized(updateOrder)).Methods("PUT")
-	myRouter.Handle("/user/{id}", isAuthorized(updateUser)).Methods("PUT")
-	myRouter.Handle("/user/{id}", isAuthorized(deleteUser)).Methods("DELETE")
 	myRouter.HandleFunc("/login", login).Methods("POST")
 	myRouter.HandleFunc("/register", register).Methods("POST")
-	log.Fatal(http.ListenAndServe(":8000", myRouter))
+	myRouter.HandleFunc("/user/{id}", updateUser).Methods("PUT")
+	myRouter.HandleFunc("/user/{id}", deleteUser).Methods("DELETE")
+	myRouter.HandleFunc("/user_orders/{id}", userOrders)
+	myRouter.HandleFunc("/user_order", addOrder).Methods("POST")
+	myRouter.HandleFunc("/user_order/{id}", deleteOrder).Methods("DELETE")
+	myRouter.HandleFunc("/user_order/{id}", updateOrder).Methods("PUT")
+	wrappedMux := NewShopHandler(myRouter)
+	log.Fatal(http.ListenAndServe(":8000", wrappedMux))
 }
 
 /*{
@@ -42,67 +61,42 @@ func handleRequests() {
 }*/
 func login(w http.ResponseWriter, r *http.Request) {
 	reqBody, _ := ioutil.ReadAll(r.Body)
-	var user model.User
+	var user userModel.User
 	json.Unmarshal(reqBody, &user)
-	if storage.CheckUserCredentials(user.Name, user.Password) {
-		token, err := generateJWT(user.Name, user.Password)
-		if err != nil {
-			json.NewEncoder(w).Encode(model.LoginResponse{Err: err.Error(), Token: ""})
-			return
-		}
-		json.NewEncoder(w).Encode(model.LoginResponse{Err: "", Token: token})
-		return
-	}
-	json.NewEncoder(w).Encode(model.LoginResponse{Err: "Wrong credentials", Token: ""})
+	loginResult := shopController.Login(user)
+	json.NewEncoder(w).Encode(loginResult)
 }
 
 func register(w http.ResponseWriter, r *http.Request) {
 	reqBody, _ := ioutil.ReadAll(r.Body)
-	var user model.User
+	var user userModel.User
 	json.Unmarshal(reqBody, &user)
-	newUser, err := storage.AddNewUser(user.Name, user.Password)
-	sendUser(w, newUser, err)
+	registerResult := shopController.Register(user)
+	json.NewEncoder(w).Encode(registerResult)
 }
 
 func updateUser(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 	reqBody, _ := ioutil.ReadAll(r.Body)
-	var user model.User
+	var user userModel.User
 	json.Unmarshal(reqBody, &user)
-	newUser, err := storage.UpdateUser(id, user)
-	sendUser(w, newUser, err)
+	res := shopController.UpdateUser(id, user)
+	json.NewEncoder(w).Encode(res)
 }
 
 func deleteUser(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
-	res := storage.DeleteUser(id)
-	if res {
-		json.NewEncoder(w).Encode("User deleted")
-	} else {
-		json.NewEncoder(w).Encode("User order fail")
-	}
-}
-
-func sendUser(w http.ResponseWriter, newUser *model.User, err error) {
-	if err != nil {
-		json.NewEncoder(w).Encode(model.RegisterUpdateResponse{Err: err.Error(), NewUser: nil, Token: ""})
-	} else {
-		token, err := generateJWT(newUser.Name, newUser.Password)
-		if err != nil {
-			json.NewEncoder(w).Encode(model.RegisterUpdateResponse{Err: err.Error(), NewUser: nil, Token: ""})
-			return
-		}
-		json.NewEncoder(w).Encode(model.RegisterUpdateResponse{Err: "", NewUser: newUser, Token: token})
-	}
+	res := shopController.DeleteUser(id)
+	json.NewEncoder(w).Encode(res)
 }
 
 func userOrders(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["id"]
-	orders := storage.GetOrdersForUser(key)
-	json.NewEncoder(w).Encode(orders)
+	res := shopController.UserOrders(key)
+	json.NewEncoder(w).Encode(res)
 }
 
 /*{
@@ -112,89 +106,30 @@ func userOrders(w http.ResponseWriter, r *http.Request) {
 }*/
 func addOrder(w http.ResponseWriter, r *http.Request) {
 	reqBody, _ := ioutil.ReadAll(r.Body)
-	var order model.Order
+	var order orderModel.Order
 	json.Unmarshal(reqBody, &order)
-	newOrder, err := storage.AddNewOrder(order)
-	if err != nil {
-		json.NewEncoder(w).Encode(model.AddEditOrderResponse{Err: err.Error(), NewOrder: nil})
-	} else {
-		json.NewEncoder(w).Encode(model.AddEditOrderResponse{Err: "", NewOrder: newOrder})
-	}
+	res := shopController.AddOrder(order)
+	json.NewEncoder(w).Encode(res)
 }
 
 func deleteOrder(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
-	res := storage.DeleteOrder(id)
-	if res {
-		json.NewEncoder(w).Encode("Order deleted")
-	} else {
-		json.NewEncoder(w).Encode("Delete order fail")
-	}
+	res := shopController.DeleteOrder(id)
+	json.NewEncoder(w).Encode(res)
 }
 
 func updateOrder(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 	reqBody, _ := ioutil.ReadAll(r.Body)
-	var order model.Order
+	var order orderModel.Order
 	json.Unmarshal(reqBody, &order)
-	newOrder, err := storage.UpdateOrder(id, order)
-	if err != nil {
-		json.NewEncoder(w).Encode(model.AddEditOrderResponse{Err: err.Error(), NewOrder: nil})
-	} else {
-		json.NewEncoder(w).Encode(model.AddEditOrderResponse{Err: "", NewOrder: newOrder})
-	}
-}
-
-func generateJWT(userName, password string) (string, error) {
-	token := jwt.New(jwt.SigningMethodHS256)
-	claims := token.Claims.(jwt.MapClaims)
-	claims["authorized"] = true
-	claims["client"] = userName
-	claims["exp"] = time.Now().Add(time.Minute * 60).Unix()
-	var mySigningKey = []byte(password)
-	tokenString, err := token.SignedString(mySigningKey)
-	if err != nil {
-		fmt.Errorf("Something Went Wrong: %s", err.Error())
-		return "", err
-	}
-	return tokenString, nil
-}
-
-func isAuthorized(endpoint func(http.ResponseWriter, *http.Request)) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header["Token"] != nil {
-			token, err := jwt.Parse(r.Header["Token"][0], func(token *jwt.Token) (interface{}, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("There was an error")
-				}
-				claims := token.Claims.(jwt.MapClaims)
-				userName, isString := claims["client"].(string)
-				if !isString {
-					return nil, errors.New("Authorization failed")
-				}
-				user, userError := storage.GetUserByName(userName)
-				if userError != nil {
-					return nil, errors.New("Authorization failed")
-				}
-				return []byte(user.Password), nil
-			})
-
-			if err != nil {
-				fmt.Fprintf(w, err.Error())
-			}
-
-			if token.Valid {
-				endpoint(w, r)
-			}
-		} else {
-			fmt.Fprintf(w, "Not Authorized")
-		}
-	})
+	res := shopController.UpdateOrder(id, order)
+	json.NewEncoder(w).Encode(res)
 }
 
 func main() {
-	storage.Init()
+	shopDb.Init()
 	handleRequests()
 }

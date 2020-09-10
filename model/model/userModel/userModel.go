@@ -1,15 +1,9 @@
-package model
+package userModel
 
 type User struct {
 	Id       string `json:"Id"`
 	Name     string `json:"Name"`
 	Password string `json:"Password"`
-}
-
-type Order struct {
-	Id          string `json:"Id"`
-	UserId      string `json:"UserId"`
-	ProductName string `json:"ProductName"`
 }
 
 type LoginResponse struct {
@@ -23,7 +17,7 @@ type RegisterUpdateResponse struct {
 	Token   string `json:"Token"`
 }
 
-type AddEditOrderResponse struct {
-	Err      string `json:"Err"`
-	NewOrder *Order `json:"NewOrder"`
+type DeleteResponse struct {
+	Err  string `json:"Err"`
+	IsOk bool   `json:"IsOk"`
 }
